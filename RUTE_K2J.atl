@@ -1,0 +1,1602 @@
+-- @nsURI JAVA=http://www.eclipse.org/MoDisco/Java/0.2.incubation/java
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/code
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/action
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/structure
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/core
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/kdm
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/source
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/structure
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/conceptual
+-- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/built
+
+module RUTE_K2J;
+create OUT: JAVA from IN: KDM;
+
+--rule InitializerToControlElement extends TransformAbstractCodeElementToBodyDeclaration {
+--	from
+--		src: KDM!ControlElement
+--	to
+--		tgt: JAVA!Initializer
+		--(
+		--body <- src.codeElement -> select(e | e.oclIsTypeOf(KDM!KDMEntity))
+		--)}
+
+--============================================================================================================================
+--HELPERS********************************************************************************************************************
+--============================================================================================================================
+--Helper que retorna uma sequência de elementos 'datatypes'.
+--KDM:The LanguageUnit represents predefined datatypes and other common elements determined by a particular programming language.
+helper context KDM!LanguageUnit def:getOrphanTypes(): Sequence(KDM!CodeElement) =
+self.codeElement ->collect (e | if (e.name='string')then Sequence{}
+								else e
+								endif)
+				 ->flatten();
+
+--Helper que retorna uma sequência de elementos, inventario dos artefatos físicos do sistema.
+--Helper que retorna uma sequência de elementos do inventario dos artefatos físicos do sistema.
+--KDM: InventoryModel represent the physical artifacts of the existing software system.
+helper context KDM!InventoryModel def:getCompilationUnit(): Sequence(KDM!inventoryElement) =
+self.inventoryElement.asSequence();
+
+--Helper para obter todos os elementos do Modelo External (KDM)
+--Excluindo alguns tipos de elementos KDM presentes no modelo External
+helper context KDM!CodeModel def:getExternalElements():KDM!codeElement =
+KDM!Segment.allInstances() -> select(e | e.refImmediateComposite().oclIsUndefined())
+						   -> collect(e | e.model)->flatten()
+						   -> select(e | e.name = 'externals')
+						   -> collect (f|f.codeElement)-> flatten()
+						   -> collect (f|if (f.oclIsKindOf(KDM!Value)or 
+						   		             f.oclIsKindOf(KDM!ArrayType)or 
+											 f.name='array creation' or
+											 f.name='method invocation' or
+											 f.name='cast' or
+											 f.name='parenthesized'or
+											 f.name='-' or
+											 f.name='+' or
+											 f.name='/' or
+											 f.name='*' or
+											 f.name='==' or
+											 f.oclIsKindOf(KDM!TemplateType) or
+											 f.name='array length access' or
+											 f.name='field access'or
+											 f.name ='array initializer'or
+											 f.name='array access' or  
+											 f.name='null' or
+											 f.name = 'class instance creation')then
+						   											Sequence{}
+																	else f 
+																	endif)
+						   ->flatten()
+      					   ->asSequence();
+--Helper para obter a sequência de elementos 'datatypes' do modelo externo
+helper context KDM!CodeModel def:getExternalOrphanTypes():KDM!codeElement =
+KDM!Segment.allInstances() -> select(e | e.refImmediateComposite().oclIsUndefined())
+						   -> collect(e | e.model)->flatten()
+						   -> select(e | e.name = 'externals')
+						   -> collect (f|f.codeElement)->flatten()
+						   -> collect (f|if (f.oclIsKindOf(KDM!ArrayType) or f.oclIsKindOf(KDM!TemplateType))then
+						   				 f
+										 else 
+										 Sequence{} 
+						   				 endif)
+						   ->flatten()
+      					   ->asSequence();
+
+--Helper para obter a sequência de parâmetros do Método enviado como parâmetro
+helper context KDM!MethodUnit def:getParametersMethod(m: KDM!MethodUnit): Sequence(KDM!parameterUnit) =
+m.codeElement -> select(e | e.oclIsKindOf(KDM!Signature)) 
+			  -> collect(f |f.parameterUnit)->flatten()
+			  -> select(e | e.kind = #unknown);
+
+--Helper para obter a sequência de parâmetros Throw do Método enviado como parâmetro
+helper context KDM!MethodUnit def:getParametersThrows(m: KDM!MethodUnit):  Sequence(KDM!parameterUnit)  =
+m.codeElement -> select(e | e.oclIsKindOf(KDM!Signature)) -> flatten()	  
+			  -> collect(f |f.parameterUnit)->flatten()
+			  -> select(e | e.kind = #throws)-> flatten();
+
+--Helper para obter a sequência de elementos retornos do Método.
+helper context KDM!MethodUnit def: getReturns(m: KDM!MethodUnit): Sequence(KDM!parameterUnit) =
+m.codeElement -> select(e | e.oclIsKindOf(KDM!Signature)) 
+			  -> collect(f |f.parameterUnit)->flatten()
+			  -> select(e | e.kind = #return); 
+
+--Helper que retorna a referência da Classe ao qual pertence o elemento enviado por parâmetro.
+helper context OclAny def: getOriginalCompilationUnitJavaModel (m:OclAny):JAVA!CompilationUnit =
+	if m.oclIsTypeOf(KDM!ClassUnit) or m.oclIsTypeOf(KDM!InterfaceUnit) then
+	JAVA!CompilationUnit.allInstances()->select(e |e.name=m.name.concat('.java'))
+	else
+		if m.oclIsTypeOf(KDM!CodeModel) then
+			OclUndefined
+		else
+			m.getOriginalCompilationUnitJavaModel(m.refImmediateComposite())
+		endif
+	endif;
+
+--Helper chamado por o helper getOriginalCompilationUnitJavaModelKDMmodel 
+helper context OclAny def: getOriginalCompilationUnit_auxiliar (m:OclAny):JAVA!CompilationUnit =
+JAVA!CompilationUnit.allInstances()->collect(e | if (e.name=m.name)then
+													 e
+											     else
+											     	Sequence{}
+												  endif);
+
+--Helper que retorna a referência da Classe ao qual pertence o elemento enviado por parâmetro.
+--O Helper utiliza o elemento 'region' do modelo KDM para obter a referência.
+--Adicionalmente este Helper llama al helper getOriginalCompilationUnitJavaModel_auxiliar
+helper context OclAny def: getOriginalCompilationUnitJavaModelKDMmodel(m:OclAny):JAVA!CompilationUnit =
+m.source->collect (f |f.region)->flatten()
+		->collect (f |f.file)->flatten()
+		->collect (f | thisModule.getOriginalCompilationUnit_auxiliar(f))
+		->flatten();
+
+--Helper recursivo para verificar se o elemento pertence ao Modelo External com o objetivo de colocar o atributo 'proxy=true'
+helper context OclAny def:checkElementoExternal(m:OclAny):Boolean =
+if m.oclIsTypeOf(KDM!CodeModel)then
+	 if(m.name='externals')then
+	 	true
+	 else
+	 	false
+	 endif
+else
+	m.checkElementoExternal(m.refImmediateComposite())
+endif;
+
+--Helper para obter a variavel (fragment) dos elementos 'Field Declaration', variaveis locais e inicializador da estrutura 'ForStatement'
+--Variable declaration fragment AST node type, used in field declarations, local variable declarations, ForStatement initializers, and LambdaExpression parameters.
+helper def:getFragment(m:String):JAVA!VariableDeclarationFragment=
+JAVA!VariableDeclarationStatement.allInstances()->collect(f| f.fragments)->flatten()
+												->collect(f|if (f.name=m) then f 
+					  										else Sequence{} 
+						  									endif)
+->union(
+JAVA!VariableDeclarationExpression.allInstances()->collect(f| f.fragments)->flatten()
+												 ->collect(f|if (f.name=m) then f 
+						  									 else Sequence{} 
+						  									 endif)
+)
+->union( JAVA!FieldDeclaration.allInstances()	->collect(f| f.fragments)->flatten()
+											 	->collect(f|if (f.name=m) then f 
+						  								    else Sequence{} 
+					  								        endif)
+)->flatten();
+
+--Helper para obter a variávei utilizada como parâmetro.
+--Single variable declaration nodes are used in a limited number of places, including formal parameter lists and catch clauses. 
+helper def:getParametro(m:String):JAVA!VariableDeclaration=
+let mysequence: String = JAVA!SingleVariableDeclaration.allInstances()->collect(f|f.name)
+in 
+   if (mysequence->includes(m))then
+   JAVA!SingleVariableDeclaration.allInstances().asSequence().at(mysequence->indexOf(m))
+   else
+   OclUndefined
+   endif;
+
+--Helper que retorna o elemento 'actionRelation'(KDM) do tipo 'Reads'
+helper context KDM!ActionElement def:getReads (m:KDM!ActionElement):Sequence(JAVA!Expression)=
+m.actionRelation-> select (e |e.oclIsTypeOf(KDM!Reads))->flatten();
+
+--Helper que retorna o elemento 'actionRelation'(KDM) do tipo 'Writes'
+helper context KDM!ActionElement def:getWrites (m:KDM!ActionElement):Sequence(JAVA!Expression)=
+m.actionRelation-> select (e |e.oclIsTypeOf(KDM!Writes))->flatten();
+
+--Helper que retorna o elemento 'actionRelation'(KDM) do tipo 'Addresses'
+helper context KDM!ActionElement def:getAddresses (m:KDM!ActionElement):Sequence(JAVA!Expression)=
+m.actionRelation-> select (e |e.oclIsTypeOf(KDM!Addresses))->flatten();
+
+--Helper que retorna o elemento 'actionRelation'(KDM) do tipo 'UsesType'
+helper context KDM!ActionElement def:getUsesType(m:KDM!ActionElement):Sequence(JAVA!Expression)=
+m.actionRelation-> select (e |e.oclIsTypeOf(KDM!UsesType))->flatten();
+
+--Helper que obtem o ordem dos elementos no corpo de um método
+-- /*Revisar com maior detalhe o helper, os elementos do KDM model não respeitam a ordem */
+helper def:getOrdemElementos(m:KDM!ActionElement):Sequence(JAVA!Expression)=
+KDM!ModelElement.allInstances()
+-->collect(e |if (e.oclIsKindOf(KDM!AbstractCodeElement) or e.oclIsKindOf(KDM!AbstractActionRelationship)) 
+--             then e
+--		   	 else Sequence{}
+--		 	 endif)
+-->flatten()
+->collect(e |if (e.refImmediateComposite()=m) then e
+		   	 else Sequence{}
+		 	 endif)
+->flatten();
+
+--Helper que obtém a ordem das Classes no Modelo para serem colocadas nos CompilationUnits
+--Importante para gerar o código fonte
+--*******************************************************NAO UTILIZADO APAGAR
+helper def:getOrdemClasses(m:String):Integer=
+KDM!InventoryModel.allInstances() ->collect(f| f.inventoryElement)
+ 								  ->flatten()
+								  ->collect(f| f.name)
+								  ->indexOf(m);
+
+--Helper para obter os elementos 'imports' de uma Classe
+--O helper recebe como parâmetro o nome da Classe 
+helper def:getImportsporClasses(m:String):JAVA!NamedElement=
+KDM!Datatype.allInstances() -> select(e |e.name.concat('.java')=m)->flatten()
+							-> collect(e|e.codeRelation)->flatten()
+							-> select(e |e.oclIsTypeOf(KDM!Imports))->flatten();
+
+--Helper para obter os elementos 'imports' de uma Classe Anônima
+--O Helper recebe como parâmetro o nome da Classe ao qual pertence a Classe Anônima 
+helper def:getImportsporAnonymusClasses(m:String):JAVA!NamedElement=
+KDM!ClassUnit.allInstances()->select(e |e.name='Anonymous type')
+							->collect(e|if (e.checkAnonymus(e.refImmediateComposite(),m)) then e
+		   	                          else Sequence{}
+		 	                          endif)->flatten()
+			  				->collect (e|e.codeRelation)->flatten()
+							->select (e |e.oclIsTypeOf(KDM!Imports))->flatten();
+
+--Helper chamado por o helper getImportsporAnonymusClasses
+helper context OclAny def:checkAnonymus(p:OclAny,m:OclAny ):Boolean =
+if (p.oclIsTypeOf(KDM!ClassUnit))then
+	 if(p.name.concat('.java')=m)then
+	 true
+	 else
+	  		if (p.refImmediateComposite().oclIsTypeOf(KDM!CodeModel))then
+	  		false
+	  		else
+	  		p.checkAnonymus(p.refImmediateComposite(),m)
+	 		endif
+	endif
+else
+			if (p.refImmediateComposite().oclIsTypeOf(KDM!CodeModel))then
+	  		false
+	  		else
+	  		p.checkAnonymus(p.refImmediateComposite(),m)
+	 		endif
+endif;
+
+
+--Helper que retorna a referência ao pacote ao qual pertence à classe enviada como parâmetro
+helper def:getPackageCompilationUnit(m:String):JAVA!Package=
+KDM!Datatype.allInstances()    ->select  (e |e.name.concat('.java')=m)
+							   ->collect (e|e.refImmediateComposite())
+							   ->flatten();
+
+--Helper para obter a referência à classe ou Interface no modelo.
+helper def:getTypeCompilationUnit(m:String):JAVA!TypeDeclaration=
+KDM!Datatype.allInstances()     ->select  (e |e.name.concat('.java')=m)
+							   	->flatten()
+							   	->first();
+
+--Helper para obter o verdadeiro tipo da metaclasse 'TemplateUnit' no modelo, 
+--detectando se no interior se encontra a metaclasse 'InterfaceUnit'(KDM).
+helper context KDM!TemplateUnit def : getRealTypeInterfaceUnit(m:KDM!TemplateUnit) : KDM!DataType =
+m.codeElement->collect(e | if (e.oclIsTypeOf(KDM!InterfaceUnit))then 
+							e 
+						   else Sequence{} 
+						   endif )->flatten();
+
+--Helper para obter o verdadeiro tipo da metaclasse 'TemplateUnit' no modelo, 
+--detectando se no interior se encontra a metaclasse 'ClassUnit'(KDM).
+helper context KDM!TemplateUnit def : getRealTypeClassUnit(m:KDM!TemplateUnit) : KDM!DataType =
+m.codeElement->collect(e | if (e.oclIsTypeOf(KDM!ClassUnit))then 
+							e 
+						   else Sequence{} 
+						   endif )->flatten();
+
+--Helper que converte o tipo de dado do modelo KDM para o modelo JAVA
+helper def:getType(m:KDM!Datatype):JAVA!TypeAccess =
+if (m.oclIsKindOf(KDM!PrimitiveType) or m.oclIsKindOf(KDM!ArrayType) or m.oclIsKindOf(KDM!TemplateType))then
+		JAVA!Model.allInstances()-> collect(e | e.orphanTypes)->flatten() ->select(e |e.name= m.name)
+else
+	if (m.oclIsTypeOf(KDM!ClassUnit)or m.oclIsTypeOf(KDM!TemplateUnit))then
+		if ( m.oclIsTypeOf(KDM!TemplateUnit))then
+		 	JAVA!ClassDeclaration.allInstances().asSequence()-> select(e | e.name.concat('<E>')= m.name)	 
+		else
+		 	JAVA!ClassDeclaration.allInstances().asSequence()-> select(e | e.name= m.name)
+		endif
+	else
+		if (m.oclIsKindOf(KDM!InterfaceUnit))then
+		    if ((JAVA!InterfaceDeclaration.allInstances()-> select(e | e.name= m.name)).isEmpty())then
+				JAVA!AnnotationTypeDeclaration.allInstances()-> select(e | e.name= m.name)
+			else
+				JAVA!InterfaceDeclaration.allInstances()-> select(e | e.name= m.name)
+			endif
+				
+		else			
+			OclUndefined
+		endif
+	endif
+endif;
+
+--Helper que obtém a referencia do tipo do elemento
+helper def:getTypeAccess(m:String):JAVA!TypeAccess =
+  JAVA!ClassDeclaration.allInstances().asSequence()-> select(e | e.name= m)
+  ->union (JAVA!InterfaceDeclaration.allInstances()-> select(e | e.name= m))
+  ->union (JAVA!AnnotationTypeDeclaration.allInstances()-> select(e | e.name= m)) 
+  ->flatten();
+
+--=========================================================================================================================
+--LAZY RULES***************************************************************************************************************
+--=========================================================================================================================
+--Define os atributos do elemento orphanTypes do Modelo Java
+lazy rule setOrphanTypes{
+	from
+		source: KDM!LanguageUnit 
+	to
+		target:JAVA!PrimitiveType
+		(name <-source.name)
+}
+
+--Define os atributos do elemento compilationUnits do Modelo Java
+lazy rule setCompilationUnit{
+	from
+		source: KDM!InventoryModel
+	to
+		target:JAVA!CompilationUnit
+		( name 			    <- source.name
+		 ,originalFilePath 	<- source.path
+		 ,package			<- thisModule.getPackageCompilationUnit(source.name)
+	     ,types				<- thisModule.getTypeCompilationUnit(source.name)			  
+		 ,imports           <- thisModule.getImportsporClasses(source.name)
+		 ,imports           <- thisModule.getImportsporAnonymusClasses(source.name)
+        )
+}
+
+--Define os atributos dos parâmetros dos métodos no Modelo Java
+lazy rule SetParametros{
+	from
+		source: KDM!ParameterUnit
+	to
+		target:JAVA!SingleVariableDeclaration
+		( name 						<- source.name
+		 ,originalCompilationUnit   <-thisModule.getOriginalCompilationUnitJavaModel(source)
+	  -- ,extraArrayDimensions		<- source.size.debug()
+		 ,modifier					<-variavelModifier
+		 ,type 						<-variavelType
+		)
+		,variavelModifier:JAVA!Modifier(
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- thisModule.getType(source.type)
+		)
+}
+
+--Define os atributos do parâmetro ThrownExceptions no Modelo Java
+--lazy rule SetParametrosThrownExceptions{
+--	from
+--		source: KDM!parameterUnit
+--	to
+--		target:JAVA!TypeAccess(
+-- 		type <- thisModule.getType(source.type)
+--		)
+--}
+
+--Define os atributos dos parâmetros de retorno do Metodo e do ThrownExceptions
+lazy rule SetTypeParametrosRetorno{
+	from  source: KDM!ParameterUnit
+	to    target: JAVA!TypeAccess(
+			type <- --source.type
+					thisModule.getType(source.type)
+)}
+
+--Lazy rule para criar Extends das classes Abstratas
+lazy rule CreateExtends{
+	from
+		source: KDM!Extends
+	to
+		target: JAVA!TypeAccess (
+		type <- source.to
+)}
+--============================================================================================================================
+--TRANSFORMATION RULES*****************************************************************************************************
+--============================================================================================================================
+
+--=======================
+--=Regra principal Model=
+--=======================
+--Regra principal para estruturar o Modelo Java a partir do Modelo KDM
+--Com o intuito de evitar a duplicidade no modelo resultante se utiliza o Helper getElementosModeloExternal() para incorporar
+--os elementos que pertencem ao modelo external KDM
+rule TransformCodeModelToJavaModel{
+	from 
+		  orphan:    KDM!LanguageUnit
+		 ,inventory: KDM!InventoryModel
+		 ,source:    KDM!CodeModel( not (source.name = 'externals'))
+	to  
+		 target: JAVA!Model (
+		 name                <- source.name
+		 ,ownedElements      <- source.codeElement 
+		 ,ownedElements      <- source.getExternalElements()
+		 ,orphanTypes		 <- source.getExternalOrphanTypes() 
+		 ,orphanTypes        <- orphan.getOrphanTypes()-> collect (e |thisModule.setOrphanTypes(e))      
+		 ,compilationUnits   <- inventory.getCompilationUnit() -> collect (e |thisModule.setCompilationUnit(e)) 
+	     )
+}
+
+--Regra para transformat pacotes e sub-pacotes
+rule TransformPackageToJavaPackage{
+	from
+		 source: KDM!Package
+	to
+		 target: JAVA!Package(
+		  name  		   	<- source.name
+		 ,ownedPackages 	<- source.codeElement -> select(e | e.oclIsTypeOf(KDM!Package))
+		 ,ownedElements 	<- source.codeElement -> select(e | e.oclIsTypeOf(KDM!Package)=false) 
+		 ,proxy 			<- source.checkElementoExternal (source)
+)}
+--==================
+--=Regras Abstracts=
+--==================
+--abstract rule TransformAbstractCodeElementToASTN{
+--	from
+--		source:KDM!AbstractCodeElement 
+--	to
+--		target:JAVA!ASTNode 
+--		( --comments 			 	  <- source.comment
+		  --originalCompilationUnit <- JAVA!CompilationUnit.allInstances()
+--		)}
+
+--abstract rule TransforAbstractCodeElementToNamedElement {--extends TransformAbstractCodeElementToASTN {
+--	from
+--		source: KDM!AbstractCodeElement 
+--	to
+--		target: JAVA!NamedElement
+--		(name	<- source.name
+--		)}
+
+abstract rule TransformAbstractCodeElementToBodyDeclaration{-- extends TransforAbstractCodeElementToNamedElement {
+	from
+		source: KDM!AbstractCodeElement 
+	to
+		target: JAVA!BodyDeclaration
+		( name			<- source.name
+		 ,modifier 		<- variavelModifier
+		 ,annotations  	<- source.codeRelation -> collect(e |if (e.oclIsTypeOf(KDM!HasValue))then
+															 thisModule.CreateAnnotation(e)
+															 else OclUndefined
+		 													--Sequence{}
+															 endif)-->flatten() 
+		)
+		,variavelModifier:JAVA!Modifier(
+	 	 visibility  	<- source.attribute-> collect(f | if (f.value='public abstract'or f.value='public final')then 
+	 	 													#"public"
+															else
+															 f.value
+															endif)
+		,inheritance 	<-source.attribute-> collect(f | if (f.value='public abstract')then 
+	 	 						 						   #"abstract"
+														   else
+														   	  if (f.value='public final')then 
+	 	 						 						   	  #"final"
+														      else
+														       OclUndefined
+															  endif
+														   endif)
+)}
+
+abstract rule TransforDatatypeToAbstractTypeDeclaration extends TransformAbstractCodeElementToBodyDeclaration{
+from 
+ 	 source: KDM!Datatype 
+to
+     target: JAVA!AbstractTypeDeclaration(
+			--commentsBeforeBody  <- src.comment,
+			--commentsAfterBody   <- src.comment
+			superInterfaces <-source.codeRelation->  collect(e |if (source.oclIsTypeOf(KDM!ClassUnit))then
+																	if(e.oclIsTypeOf(KDM!Implements)) then
+																   		thisModule.CreateImplements(e)
+																   	else
+																   		Sequence{}
+			  													  	endif
+																else
+																	thisModule.CreateExtends(e)
+																endif)										
+			)}
+
+abstract rule TransformTemplateUnitToTypeDeclaration {
+	from
+		source: KDM!TemplateUnit
+		(if ( (source.codeElement -> select(e|e.oclIsKindOf(KDM!TemplateParameter))).isEmpty())then
+									 false
+								     else
+								 	 true
+								     endif
+								) 
+	to
+		target: JAVA!TypeDeclaration(
+		 typeParameters  <-source.codeElement  -> select(e | e.oclIsKindOf(KDM!TemplateParameter))
+		,superInterfaces <-source.codeRelation -> collect(e |if (e.oclIsTypeOf(KDM!Implements))then
+			                                                	thisModule.CreateImplements(e)
+															 else
+																thisModule.CreateExtends(e)
+															endif)
+		)
+}
+
+--============================================
+--=Regra TransformClassUnitToClassDeclaration=
+--============================================
+--Regra para transformar a metaclasse ClassUnit para ClassDeclaration
+rule TransformClassUnitToClassDeclaration extends TransforDatatypeToAbstractTypeDeclaration{ 
+	from
+	    source: KDM!ClassUnit (source.name<>'Anonymous type' and 
+	    					   (not source.refImmediateComposite().oclIsTypeOf(KDM!TemplateUnit)))
+	 to   
+	 	target:JAVA!ClassDeclaration (
+	 	 originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,proxy 			         <- source.checkElementoExternal (source)
+		,bodyDeclarations 		 <- source.codeElement-> select(e | e.oclIsTypeOf(KDM!StorableUnit))
+		,bodyDeclarations 	     <- source.codeElement-> select(e | e.oclIsTypeOf(KDM!MethodUnit))
+		,bodyDeclarations 	     <- source.codeElement-> select(e | e.oclIsTypeOf(KDM!ClassUnit))
+		,superClass              <- source.codeRelation-> collect(e |if (e.oclIsTypeOf(KDM!Extends))then
+												      					thisModule.CreateExtends(e)
+												  					 else
+													   					 Sequence{}
+												  					 endif)
+)}
+
+--Regra para transformar a metaclasse ClassUnit para AnonymousClassDeclaration
+rule TransformClassUnitToAnonymousClassDeclaration{
+	from
+		source: KDM!ClassUnit (source.name='Anonymous type')
+	to
+		target: JAVA!AnonymousClassDeclaration (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,bodyDeclarations 		<- source.codeElement-> select(e | e.oclIsTypeOf(KDM!StorableUnit))
+		,bodyDeclarations 	    <- source.codeElement-> select(e | e.oclIsTypeOf(KDM!MethodUnit))
+		)
+}
+
+--==================================
+--=Regras para INTERFACE E TEMPLATE=
+--==================================
+--Regra para transformar a metaclasse InterfaceUnit para InterfaceDeclaration
+rule TransformInterfaceUnitToInterfaceDeclaration extends TransforDatatypeToAbstractTypeDeclaration{
+	from	
+		source:KDM!InterfaceUnit( (not source.refImmediateComposite().oclIsTypeOf(KDM!TemplateUnit)) and 
+		                          (source.annotation.isEmpty()))
+								  --Revisar a condição de source.annotation.isEmpty()
+	to
+		target:JAVA!InterfaceDeclaration (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,proxy 			  		<- source.checkElementoExternal (source)
+		,bodyDeclarations 		<- source.codeElement -> select(e | e.oclIsTypeOf(KDM!StorableUnit))
+		,bodyDeclarations 	    <- source.codeElement -> select(e | not (e.oclIsTypeOf(KDM!StorableUnit)))
+		)
+}
+
+--Regra para transformar a metaclasse TemplateUnit para ClassDeclaration
+rule TransformTemplateUnitToClassDeclaration extends TransformTemplateUnitToTypeDeclaration{ 
+	from   
+	    source: KDM!TemplateUnit  (not source.getRealTypeClassUnit(source).isEmpty())
+	    					      using {
+								  realType :KDM!Datatype = source.getRealTypeClassUnit(source)->first();}
+	 to   
+	 	target:JAVA!ClassDeclaration (
+	 	 name 			 		 <- realType.name
+		,proxy 			         <- source.checkElementoExternal(source)
+		,bodyDeclarations 		 <- realType.codeElement -> select(e | e.oclIsTypeOf(KDM!StorableUnit))
+		,bodyDeclarations 	     <- realType.codeElement -> select(e | e.oclIsTypeOf(KDM!MethodUnit))
+		,superClass              <- realType.codeRelation-> collect(e |if (e.oclIsTypeOf(KDM!Extends))then
+												      				   thisModule.CreateExtends(e)
+												  					   else
+													   				   Sequence{}
+												  						endif )
+		)
+}
+
+--Regra para transformar a metaclasse TemplateUnit para InterfaceDeclaration
+rule TransformTemplateUnitToInterfaceDeclaration extends TransformTemplateUnitToTypeDeclaration {--TransformDatatypeToTypeDeclaration{
+	from	 
+	   source:KDM!TemplateUnit (not source.getRealTypeInterfaceUnit(source).isEmpty())
+        using {
+		realType :KDM!Datatype = source.getRealTypeInterfaceUnit(source)->first();
+	     }
+	to
+		target:JAVA!InterfaceDeclaration (
+			 name 			  <-realType.name
+			,proxy 			  <- source.checkElementoExternal (source)
+			,bodyDeclarations <- realType.codeElement -> select(e | e.oclIsTypeOf(KDM!StorableUnit))
+			,bodyDeclarations <- realType.codeElement -> select(e | not (e.oclIsTypeOf(KDM!StorableUnit)))
+		)}
+
+-- Regra para transformar parametros declarado como tipo generico
+rule TransformTemplateParameterToTypeParameter {
+	from
+		source: KDM!TemplateParameter  
+	to
+		parameter: JAVA!TypeParameter(
+		name <- source.name
+		)
+}
+
+-- Regra para os elementos Annotation, utilizado nas classes abstratas
+rule TransformInterfaceUnitToAnnotationTypeDeclaration extends TransforDatatypeToAbstractTypeDeclaration {
+	from
+		source: KDM!InterfaceUnit (not source.annotation.isEmpty())
+	to
+		target: JAVA!AnnotationTypeDeclaration (
+		name<- source.name
+		,proxy <- source.checkElementoExternal (source)
+)}
+
+--Regra para transformar a metaclasse ArrayType para ArrayType
+rule TransformArrayTypeToArrayType {
+	from
+		source: KDM!ArrayType
+	to
+		target: JAVA!ArrayType (
+		name         <- source.name
+		,dimensions  <- source.size
+		,elementType <- variavelType
+		),
+		variavelType:JAVA!TypeAccess
+		( type <- thisModule.getType(source.itemUnit.type)
+		)
+}
+
+--Regra para transformar os tipos de datos TemplateType para ParameterizedType
+rule TransformTemplateTypeToParameterizedType {
+	from
+		source: KDM!TemplateType  
+	to
+		target: JAVA!ParameterizedType(
+		name 			<- source.name
+		,type 			<- variavelType 
+		,typeArguments 	<- variavelArguments 
+			
+		),variavelType:JAVA!TypeAccess
+		( type <- source.codeRelation -> select(e | e.oclIsTypeOf(KDM!InstanceOf))	
+									  -> flatten()
+									  -> collect(e | thisModule.getType(e.to))
+									  -> flatten()
+		),variavelArguments :JAVA!TypeAccess
+		( type<- source.codeRelation -> select(e | e.oclIsTypeOf(KDM!ParameterTo))-> flatten()
+									 -> collect(e | thisModule.getType(e.to))-> flatten()						  		  									   
+		)
+}
+
+--==================================================================
+--**Regra MethodUnit para ConstructorDeclaration e MethodDeclaration
+--==================================================================
+--Transforma a metaclasse MethodUnit para a metaclasse ConstructorDeclaration
+rule TransformMethodUnitToConstructorDeclaration  extends TransformAbstractCodeElementToBodyDeclaration{
+	from 
+	 	source:KDM!MethodUnit (source.kind = #constructor) 
+	to
+	 	target:JAVA!ConstructorDeclaration
+		(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source),
+	 	body               <- source.codeElement                -> select(e | e.oclIsTypeOf(KDM!BlockUnit)),
+	 	thrownExceptions   <- source.getParametersThrows(source)-> collect (e |thisModule.SetTypeParametrosRetorno(e))
+	 	,parameters        <- source.getParametersMethod(source)-> collect (e |thisModule.SetParametros(e))
+		)
+}
+--thrownExceptions   <- source.getParametersThrows(source)-> collect (e |thisModule.SetParametros(e))
+
+
+--Transforma a metaclasse MethodUnit para a metaclasse MethodDeclaration
+rule TransformMethodUnitToMethodDeclaration extends TransformAbstractCodeElementToBodyDeclaration{
+ from 
+ 	source:KDM!MethodUnit (source.kind = #method)
+ to
+	target:JAVA!MethodDeclaration(
+	originalCompilationUnit 	<- thisModule.getOriginalCompilationUnitJavaModel(source)
+	,redefinedMethodDeclaration <- source.codeRelation-> collect(e |if (e.oclIsTypeOf(KDM!ImplementationOf))then e.to
+												 		 else  Sequence{}
+												 		 endif )->flatten()									 
+	,body              			<- source.codeElement				 -> select(e | e.oclIsTypeOf(KDM!BlockUnit))
+	,thrownExceptions  			<- source.getParametersThrows(source)-> collect (e |thisModule.SetTypeParametrosRetorno(e))
+	,parameters        			<- source.getParametersMethod(source)-> collect (e |thisModule.SetParametros(e))
+	,returnType		   			<- source.getReturns(source)		 -> collect (e |thisModule.SetTypeParametrosRetorno(e))
+	)
+}
+--================
+--Regra Atributos=
+--================
+--Transforma a metaclasse StorableUnit para a metaclasse FieldDeclaration
+--Para variavéis que não são locais
+--***REVISAR a extension para TransformAbstractCodeElementToBodyDeclaration , deberia solo agregarse el atributo
+--****modificado el 12/02/2018
+rule TrasformStorableUnitToFieldDeclaration extends TransformAbstractCodeElementToBodyDeclaration {
+	from
+		source: KDM!StorableUnit (not (source.kind=#local))
+	to
+		target: JAVA!FieldDeclaration(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source),
+		 type        <- variavelType
+		,fragments   <- variavelFragments
+		,modifier 	 <- variavelModifier
+		,annotations <- OclUndefined
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- thisModule.getType(source.type))
+		
+		,variavelFragments:JAVA!VariableDeclarationFragment 
+		( originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)	
+	  	  ,name                   <- source.name
+		  ,initializer			  <- source.codeRelation -> collect (f| if (f.oclIsTypeOf(KDM!HasValue))then
+		  													           f.to
+															           else
+		  												 			   Sequence{}
+		  															   endif)
+														 -> flatten())
+		,variavelModifier:JAVA!Modifier(
+	 	 visibility  	<- source.attribute-> collect(f | if (f.value='public abstract'or f.value='public final')then 
+	 	 													#"public"
+														  else
+																if (f.value='private final')then 
+	 	 															#"private"
+																else
+															 		f.value
+																endif
+														  endif)
+		,inheritance 	<-source.attribute-> collect(f | if (f.value='public abstract')then 
+	 	 						 						   	#"abstract"
+														 else
+														   	  if (f.value='public final')then 
+	 	 						 						   	  	  #"final"
+														      else
+														       	   OclUndefined
+															  endif
+														  endif)
+	  ,static  <- (source.kind=#static)
+)}
+
+--=======================
+--Regra BlockToBlockUnit=
+--=======================
+--Transforma a metaclasse BlockUnit para a metaclasse Block
+--O BlockUnit representa blocos logicamente e fisicamente relacionados do ActionElement
+rule TransformBlockUnitToBlock{
+ from  
+	        source: KDM!BlockUnit (not source.oclIsKindOf(KDM!ExceptionUnit))
+ to	    
+	        target: JAVA!Block (
+	   		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+			,statements  <-source.codeElement												 
+ )}
+
+--=============================
+--==Regras para os STATEMENT===
+--=============================
+--Regra que transforma as metaclasses ActionElement do tipo 'expression statement' para a metaclasse ExpressionStatement
+rule TransformActionElementToExpressionStatement{
+	from  source: KDM!ActionElement (source.kind='expression statement' )
+	to    target: JAVA!ExpressionStatement(
+		  originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		  ,expression 			  <- source.codeElement
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'return' para a metaclasse ReturnStatement
+rule TransformActionElementToReturnStatement{
+	from  source: KDM!ActionElement (source.kind='return') 
+	to    target: JAVA!ReturnStatement(
+		  originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)	
+		 ,expression 			  <- if (source.getReads(source).isEmpty())then 
+							  			 source.codeElement
+		                  			 else 
+		                  	  			 source.getReads(source)
+						  			endif
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'variable declaration' para a metaclasse VariableDeclarationStatement
+--A metaclasse não deve pertencer a estrutura 'For'
+rule TransformActionElementToVariableDeclarationStatement {
+	from
+		source: KDM!ActionElement 	(source.kind ='variable declaration' and 
+									(if ( source.refImmediateComposite().name='for')then
+									 false 
+									 else 
+									 true 
+									 endif))
+	to
+		tgt: JAVA!VariableDeclarationStatement(
+		originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+		,type        <- variavelType
+		,fragments   <- variavelFragments
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- source.codeElement -> collect(f |if (f.oclIsTypeOf(KDM!StorableUnit))then 
+			                                       thisModule.getType(f.type)
+												   --f.type
+												   else
+												   Sequence{}
+												   endif)
+		)
+		,variavelFragments:JAVA!VariableDeclarationFragment 
+		( originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+	  	  ,name                   <- source.codeElement -> select(f |f.oclIsTypeOf(KDM!StorableUnit))
+		  												-> collect (f| f.name)											
+		 ,initializer			  <- source.codeElement -> select (f |f.oclIsTypeOf(KDM!StorableUnit))-> flatten()
+		  												-> collect (f| f.codeRelation)-> flatten()
+														-> collect (f| if (f.oclIsTypeOf(KDM!HasValue))then
+		  													           f.to
+																	  --REVISAR***
+																	   --Sequence{}
+															           else
+		  												 			   Sequence{}
+		  															   endif
+														)				
+	)}
+
+--=============================
+--==Regras para os EXPRESSION===
+--=============================
+--Regra que transforma as metaclasses ActionElement do tipo 'assignment' para a metaclasse Assignment
+rule TransformActionElementToAssignment {
+	from
+		source: KDM!ActionElement (source.kind ='assignment')
+	to
+		target: JAVA!Assignment(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,operator 	   <- source.name
+		,leftHandSide  <- if (source.getWrites(source).isEmpty())then 
+							  source.codeElement.first()
+							  --revisar si afecta el colocar first() e last(), que es para el caso en que solo se tenga
+							  --codeElement
+		                  else 
+		                  	  source.getWrites(source)
+						  endif		
+					
+		,rightHandSide <- if (source.getReads(source).isEmpty())then 
+							  source.codeElement.last()
+		                  else 
+		                  	  source.getReads(source)
+						  endif 
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'field access' para a metaclasse FieldAccess
+rule TransformActionElementToFieldAccess{
+	from
+		source: KDM!ActionElement (source.kind='field access')
+	to
+		target: JAVA!FieldAccess (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,field      			<- variavelField
+		,expression 			<- source.codeElement
+		)
+		,variavelField:JAVA!SingleVariableAccess
+		( variable	<- if (source.getAddresses(source).oclIsUndefined())then Sequence{}
+		    		   else 
+		    		 	--Sequence{}
+		    		 	--thisModule.getFragment(source.getAddresses(source)->collect (e |e.to)->flatten()->collect (e |e.name)->flatten().debug()).debug()
+						 --source.getAddresses(source) 
+						 --REVISAR**
+						 
+						-- m.actionRelation-> select (e |e.oclIsTypeOf(KDM!Addresses))
+						 
+						 source.actionRelation  -> select (e |e.oclIsTypeOf(KDM!Addresses))
+						 						-> flatten()
+						 		  				-> collect(f |f.to)-> flatten()
+								  				-> collect(f |thisModule.getFragment(f.name))
+								  				-> flatten()
+						
+						 --source.codeRelation -> collect (f| if (f.oclIsTypeOf(KDM!Addresses))then
+		  				--									           f.to.debug()
+						--									           else
+		  				--								 			   Sequence{}
+		  					--										   endif)
+					   endif
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'infix expression' para a metaclasse InfixExpression
+rule TransformActionElementToInfixExpression{
+	from
+		source: KDM!ActionElement  (source.kind ='infix expression')
+	to
+		tgt: JAVA!InfixExpression(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+	    ,operator	   <- source.name
+		,leftOperand   <- if (source.refImmediateComposite().name.debug()='for')then 
+							--Revisar más este caso
+						    thisModule.getOrdemElementos(source).last().debug()
+						  else
+						  	thisModule.getOrdemElementos(source).first()
+						  endif
+				
+				
+		,rightOperand  <- if (thisModule.getOrdemElementos(source).size()>=2)then
+								if (source.refImmediateComposite().name='for')then 
+									--Revisar más este caso
+						    		thisModule.getOrdemElementos(source).first()
+						  		else
+						  			thisModule.getOrdemElementos(source)->at(2)
+						  		endif
+      
+						  else
+							Sequence{}
+						  endif
+		,extendedOperands<-if (thisModule.getOrdemElementos(source).size()=3)then
+								thisModule.getOrdemElementos(source)->at(3)
+						   else
+								Sequence{}
+						   endif
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'parenthesized' para a metaclasse ParenthesizedExpression
+rule TransformActionElementToParenthesizedExpression{
+	from
+		source: KDM!ActionElement  (source.kind = 'parenthesized')
+	to
+		target: JAVA!ParenthesizedExpression(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression             <-source.codeElement -> select (e |e.oclIsTypeOf(KDM!ActionElement))
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'postfix expression' para a metaclasse PostfixExpression
+rule TransformActionElementToPostfixExpression{
+	from
+		source: KDM!ActionElement (source.kind='postfix expression')
+	to
+		tgt: JAVA!PostfixExpression(
+		 originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,operator <- source.name
+		,operand <- if (source.getReads(source).isEmpty())then 
+						source.codeElement
+		            else 
+		             	source.getReads(source)
+				    endif 		
+ )}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'prefix expression' para a metaclasse PrefixExpression
+rule TransformActionElementToPrefixExpression {
+	from
+		source: KDM!ActionElement (source.kind= 'prefix expression')
+	to
+		tgt: JAVA!PrefixExpression(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,operator <- source.name
+		,operand  <- if(source.getReads(source).isEmpty())then 
+						source.codeElement
+		             else 
+		                source.getReads(source)
+				    endif 
+		)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'This' para a metaclasse ThisExpression
+rule TransformActionElementToThisExpression {
+	from
+		source: KDM!ActionElement (source.kind='this')
+	to
+		tgt: JAVA!ThisExpression(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+	  --,qualifier 				<- source.actionRelation -> collect (e |e.to)		
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'method invocation' para a metaclasse MethodInvocation
+rule TransformActionElementToMethodInvocation{
+	from
+		source: KDM!ActionElement  (source.kind='method invocation')
+	to
+		target: JAVA!MethodInvocation(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,method <-source.actionRelation-> select (e |e.oclIsTypeOf(KDM!Calls)) 
+									   -> collect (e |e.to)
+		,arguments  <-if (source.getReads(source).isEmpty())then 
+						  source.codeElement
+		              else 
+		               	  source.getReads(source)
+					  endif
+		,expression <-if(source.getAddresses(source).isEmpty()) then 
+						  if (source.getUsesType(source).isEmpty())then	  
+							  if(source.getReads(source).isEmpty())then 
+							   	  if (source.codeElement.size()>1)then
+								        source.codeElement.last()
+								  else
+								    	Sequence{}
+							 	  endif
+		                  	  else 
+							  	source.codeElement
+						 	  endif	
+						 else
+						    source.getUsesType(source) -> collect (e |thisModule.CreateUsesType(e)) 
+				    	 endif
+					 else 
+		                  source.getAddresses(source)
+					 endif
+--Ainda tenho que **REVISAR "Arguments"
+	 )
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'for' para a metaclasse ForStatement
+rule TransformActionElementToForStatement {
+	from
+		source: KDM!ActionElement  (source.kind='for')
+	to
+		target: JAVA!ForStatement (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)	
+		,expression   <-source.codeElement -> select (e |e.oclIsTypeOf(KDM!ActionElement))
+								           -> select (e |e.kind='infix expression')						  
+		,updaters     <-source.codeElement -> select (e |e.oclIsTypeOf(KDM!ActionElement))
+								           -> select (e |e.kind='postfix expression')
+		,initializers <-source.codeElement -> select (e |e.oclIsTypeOf(KDM!ActionElement))
+								           -> select (e |e.kind='variable declaration')
+		,body         <-source.codeElement -> select(e | e.oclIsTypeOf(KDM!BlockUnit))
+		)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'variable declaration' para a metaclasse VariableDeclarationStatement
+--A metaclasse deve pertencer a estrutura 'For'
+rule TransformActionElementToVariableDeclarationExpression {
+	from
+		source: KDM!ActionElement (source.kind ='variable declaration' and 
+									(if ( source.refImmediateComposite().name='for')then
+									 true 
+									 else 
+									 false 
+									 endif))
+	to
+
+		target: JAVA!VariableDeclarationExpression(
+		originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+		,type        <- variavelType
+		,fragments   <- variavelFragments
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- --source.codeElement -> collect(f |if (f.oclIsTypeOf(KDM!StorableUnit))then 
+					--                                       thisModule.getType(f.type)
+					--									   else
+					--									   Sequence{}
+					--									   endif)->flatten())
+					source.actionRelation-> collect(f |if (f.oclIsTypeOf(KDM!UsesType))then
+					                                       thisModule.getType(f.to)
+														   else
+														   Sequence{}
+														   endif)->flatten())
+		
+		,variavelFragments:JAVA!VariableDeclarationFragment 
+		(originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+		 ,name                   <- source.codeElement  -> select(f |f.oclIsTypeOf(KDM!StorableUnit))
+													    -> collect (f| f.name)
+		 ,initializer			  <- source.codeElement -> select(f |f.oclIsTypeOf(KDM!StorableUnit))
+	  												    -> collect (f| if (f.codeRelation.oclIsUndefined())then
+				  												 		Sequence{}
+				  												 	    else 
+				  												 	    f.codeRelation-> collect (m|m.to)
+				  												 	    endif)															
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'if' para a metaclasse IfStatement
+rule TransformActionElementToIfStatement {
+	from
+		source: KDM!ActionElement (source.kind='if')
+	to
+		target: JAVA!IfStatement (
+		originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression		<-	source.codeElement -> select(e | not e.oclIsTypeOf(KDM!BlockUnit))->first()
+		,thenStatement	<-	source.codeElement -> select(e | e.oclIsTypeOf(KDM!BlockUnit))->first()
+		,elseStatement	<-	if (source.codeElement.size()>2)then
+									source.codeElement.last()
+							else
+									--if ((source.codeElement -> select(e | e.oclIsTypeOf(KDM!BlockUnit))).size()>1)
+									Sequence{}
+							endif)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'class instance creation' para a metaclasse ClassInstanceCreation
+rule TransformActionElementToClassInstanceCreation{
+	from
+		source:  KDM!ActionElement (source.kind='class instance creation')
+	to
+		target: JAVA!ClassInstanceCreation(
+		originalCompilationUnit    <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,arguments				   <- source.codeElement-> select(e | e.name<>'Anonymous type')
+		,method                    <- source.actionRelation  -> select(e | e.oclIsTypeOf(KDM!Calls))
+														     -> collect( e |e.to)
+		,anonymousClassDeclaration <- source.codeElement -> select(e | e.name='Anonymous type')
+		,type					   <- variavelType
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- source.actionRelation -> collect(f |if (f.oclIsTypeOf(KDM!Creates))then 
+					                                       thisModule.getType(f.to)
+													  else
+												   			Sequence{}
+												   	  endif)
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'while' para a metaclasse WhileStatement
+rule TransformActionElementToWhileStatement{
+	from
+		source: KDM!ActionElement (source.kind='while')
+	to
+		target: JAVA!WhileStatement(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression <- source.codeElement -> select(e | not e.oclIsTypeOf(KDM!BlockUnit))
+										  --> select(e | e.oclIsTypeOf(KDM!ActionElement))
+										  -->REVISAR**
+		,body       <- source.codeElement  -> select(e | e.oclIsTypeOf(KDM!BlockUnit))
+		)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'break' para a metaclasse BreakStatement
+rule TransformActionElementToBreakStatement{
+	from
+		source: KDM!ActionElement (source.kind='break')
+	to
+		target: JAVA!BreakStatement(
+				originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'case' para a metaclasse SwitchCase
+rule TransformActionElementToSwitchCase{
+	from
+		source: KDM!ActionElement (source.kind='case')
+	to
+		target: JAVA!SwitchCase(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression <- source.codeElement
+		,default    <-if (source.codeElement.isEmpty())then
+						 true
+					 else
+						 false
+					 endif	
+	)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'switch' para a metaclasse SwitchStatement
+rule TransformActionElementToSwitchStatement{
+	from
+		source: KDM!ActionElement  (source.kind='switch')
+	to
+		target: JAVA!SwitchStatement(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression  <- if (source.getReads(source).isEmpty())then 
+							  source.codeElement -> select (f | not (f.kind='case' or 
+							  										 f.kind='expression statement' or
+																	 f.kind='break'))
+		                  else 
+		                  	  source.getReads(source)
+						  endif						  
+		,statements <- source.codeElement -> select (f | f.kind='case' or 
+				  										 f.kind='expression statement' or
+														 f.kind='break')
+)}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'Cast' para a metaclasse CastExpression
+rule TransformActionElementToCastExpression {
+	from
+		source: KDM!ActionElement(source.kind='cast')
+	to
+		target:  JAVA!CastExpression  (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,expression <- source.codeElement
+		,type 	   <- variavelType
+		)
+		,variavelType:JAVA!TypeAccess
+	    ( type <- source.actionRelation -> collect(f |if(f.oclIsTypeOf(KDM!UsesType))then
+												         thisModule.getType(f.to)
+		 										      else
+												         Sequence{}
+												      endif)									   
+		)} 
+
+
+--=======================
+--Regra Array=
+--=======================
+	
+--Regra que transforma as metaclasses ActionElement do tipo 'array access' para a metaclasse ArrayAccess
+rule TransformActionElementToArrayAccess{ 
+	from
+		source: KDM!ActionElement (source.kind='array access')     
+	to
+		target: JAVA!ArrayAccess (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,array <- source.actionRelation -> select(e | e.oclIsTypeOf(KDM!Addresses))->first()
+		,index <- if (source.actionRelation.size()>1 )then 
+						 source.actionRelation -> select(e | e.oclIsTypeOf(KDM!Addresses))->last()
+				  else
+					 	source.codeElement
+				  endif												
+		) 
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'array creation' para a metaclasse ArrayCreation
+rule TransformActionElementToArrayCreation{
+	from
+		source: KDM!ActionElement (source.kind='array creation')
+	to
+		target: JAVA!ArrayCreation (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+	   ,dimensions  <- source.codeElement
+	   ,type 	    <- variavelType
+	   ,initializer <-source.codeElement ->select(e | e.name='array initializer')
+		)
+		,variavelType:JAVA!TypeAccess
+		(type <- source.actionRelation -> collect(f |if (f.oclIsTypeOf(KDM!Creates))then 
+			                                       thisModule.getType(f.to)
+												   else
+												   Sequence{}
+												   endif)
+										-> flatten()
+		)
+}
+
+--Regra que transforma as metaclasses ActionElement do tipo 'array initializer' para a metaclasse ArrayInitializer
+rule TransformActionElementToArrayInitializer{
+	from
+		source: KDM!ActionElement (source.kind ='array initializer')
+			--(
+			-- filter initialier of AnnotationMemberValuePair
+			--not src.refImmediateComposite().oclIsTypeOf(java!AnnotationMemberValuePair)
+			--)
+	to
+		target: JAVA!ArrayInitializer  (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,expressions <-source.codeElement
+		)
+}
+
+--Regra que transforma a metaclasses ActionElement do tipo 'array length access' para a metaclasse ArrayLengthAccess
+rule TransformActionElementToArrayLengthAccess{
+	from
+		source: KDM!ActionElement (source.kind= 'array length access')
+	to
+		target: JAVA!ArrayLengthAccess  (
+		array<- source.actionRelation -> select(e | e.oclIsTypeOf(KDM!Addresses))->flatten()
+		--source.codeElement
+		)
+}
+--=================================
+--Regras WRITES, READS e ADDRESSES=
+--=================================
+--Regra que transforma as metaclasses Writes para a metaclasse SingleVariableAccess
+rule TransformWritesToSingleVariableAccess{
+	from
+		source: KDM!Writes 
+	to
+		target: JAVA!SingleVariableAccess(
+		variable <-thisModule.getFragment(source.to.name)
+		,qualifier <-if (source.attribute.isEmpty()) then
+						OclUndefined
+					else 
+						source.attribute -> collect(f |f.tag)->flatten()
+										 -> collect(f |if (f='TypeAccess')then
+														thisModule.CreateTypeAccessWriteRead(source)
+														else					
+														thisModule.CreateSingleVariableWriteRead(source)
+														endif)
+					endif 
+		   )
+		}
+
+--Regra que transforma as metaclasses Reads para a metaclasse SingleVariableAccess
+rule TransformReadsToSingleVariableAccess{
+	from
+		source: KDM!Reads 
+	to
+		target: JAVA!SingleVariableAccess(
+		variable <- if (thisModule.getFragment (source.to.name).isEmpty())then 
+						 thisModule.getParametro (source.to.name)
+					else thisModule.getFragment(source.to.name)
+					endif
+	   ,qualifier <-if (source.attribute.isEmpty()) then
+						OclUndefined
+					else 
+						source.attribute -> collect(f |f.tag)->flatten()
+										 -> collect(f |if (f='TypeAccess')then
+													   thisModule.CreateTypeAccessWriteRead(source)
+													   else					
+													   thisModule.CreateSingleVariableWriteRead(source)
+													  endif)
+					endif
+ )}
+
+--Regra que transforma a metaclasses Addresses para a metaclasse SingleVariableAccess
+rule TransformateAddressesSingleVariableAccess{
+	from
+		source: KDM!Addresses (if (source.refImmediateComposite().kind='field access')then
+									 false 
+									 else 
+									 true 
+									 endif)
+	to
+		target: JAVA!SingleVariableAccess (
+		variable <-	if (thisModule.getFragment (source.to.name).isEmpty()) then 
+						thisModule.getParametro (source.to.name)
+					else 
+						thisModule.getFragment(source.to.name)
+					endif
+		,qualifier <-if (source.attribute.isEmpty()) then
+						OclUndefined
+					else 
+						source.attribute -> collect(f |f.tag)->flatten()
+										 -> collect(f |if (f='TypeAccess')then
+													thisModule.CreateTypeAccessWriteRead(source)
+													else					
+													thisModule.CreateSingleVariableWriteRead(source)
+													endif)
+					endif
+		)
+}
+
+--=================================
+--
+--=================================
+--Lazy rule para definir o elemento type com a informação armazenada na metaclasse <Attribute>
+lazy rule CreateTypeAccessWriteRead{
+	from source: KDM!KDMRelationship 
+	to   target: JAVA!TypeAccess
+    (type <- source.attribute-> collect(f |f.value)-> flatten()
+	  					    -> collect(f |thisModule.getTypeAccess(f))-> flatten())
+}
+
+--Lazy rule para definir o elemento variable com a informação armazenada na metaclasse <Attribute>
+lazy rule CreateSingleVariableWriteRead{
+	from source: KDM!KDMRelationship 
+	to   target: JAVA!SingleVariableAccess 
+	(variable <- source.attribute -> collect(f |f.value)-> flatten()
+								  -> collect(f |thisModule.getFragment(f))
+								  -> flatten()
+) }
+
+--==============
+--=Regras Value=
+--==============
+--Regra que transforma as metaclasses Value para a metaclasse NumberLiteral
+rule TransformValueToNumberLiteral{
+	from
+		source: KDM!Value(source.name='number literal')
+	to
+		target: JAVA!NumberLiteral (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,tokenValue  			<- source.ext
+		)
+}
+
+--Regra que transforma a metaclasses Value para a metaclasse StringLiteral
+rule TransformValueToStringLiteral{
+	from
+		source: KDM!Value (source.name='string literal')
+	to
+		target: JAVA!StringLiteral  (
+		originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,escapedValue 			<- source.ext
+		)
+}
+
+--Regra que transforma a metaclasses Value para a metaclasse CharacterLiteral
+rule TransformValueToCharacterLiteral{
+	from
+		source: KDM!Value (source.name='character literal')
+	to
+		target: JAVA!CharacterLiteral (
+		originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source)
+		,escapedValue <-source.ext
+		)
+}
+
+--Regra que transforma a metaclasses Value para a metaclasse BooleanLiteral
+rule TransformBooleanLiteralToValue {
+	from
+		source: KDM!Value (source.name='boolean literal')
+	to
+		target: JAVA!BooleanLiteral(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModelKDMmodel(source)
+		,value <- if (source.ext='true')then
+					  true
+				  else
+					  false
+				  endif
+		)
+}
+
+--======
+--Regra que transforma a metaclasses Imports para a metaclasse ImportDeclaration
+rule TransformImportsToImportDeclaration {
+	from  source: KDM!Imports  
+	to    target: JAVA!ImportDeclaration (
+			originalCompilationUnit <-thisModule.getOriginalCompilationUnitJavaModel(source),
+			importedElement         <-source.to
+		)
+}
+
+--Lazy rules que cria  'Annotations'(@Override) para a implementação de metodos da classe abstrata
+--Transforma a metaclasse HasValue para a metaclasse Annotation
+lazy rule CreateAnnotation{
+	from
+		source: KDM!HasValue 
+	to
+		target: JAVA!Annotation (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,type 					<- variavelType
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- thisModule.getType(source.to))
+}
+
+--Lazy rule para a criação de 'implements' para a implementação de Interfaces. 
+--Para isto transforma a metaclasse Implements para a metaclasse TypeAccess
+lazy rule CreateImplements {
+	from
+		source : KDM!Implements  
+	to
+		target: JAVA!TypeAccess(
+		type <-source.to
+		--thisModule.getType(source.to)
+		)
+}
+
+--Regra que transforma a metaclasses CatchClause para a metaclasse CatchUnit
+rule TransformCatchUnitToCatchClause{
+	from
+		source:KDM!CatchUnit  (source.oclIsKindOf(KDM!ExceptionUnit))
+	to
+		target:JAVA!CatchClause(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,exception       <- variavelException
+		,body 			 <- source.codeElement	-> select(e | e.oclIsTypeOf(KDM!BlockUnit))	
+    	), 
+		variavelException:JAVA!SingleVariableDeclaration( 
+		name 	 				 <- source.codeElement -> select(f |f.oclIsTypeOf(KDM!StorableUnit))
+		  						                       -> collect (f| f.name)->flatten()
+		,originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+    	,modifier 				 <- variavelModifier
+    	,type 	 				 <- variavelType
+	    )
+		,variavelModifier:JAVA!Modifier(
+		)
+		,variavelType:JAVA!TypeAccess
+		( type <- source.codeElement -> collect(f |if (f.oclIsTypeOf(KDM!StorableUnit))then 
+			                                           thisModule.getType(f.type)
+											   	   else
+												       Sequence{}
+											       endif)->flatten()
+	)
+}
+
+--Regra que transforma a metaclasses TryStatement para a metaclasse TryUnit
+rule TransformTryUnitToTryStatement {
+	from
+		source:KDM!TryUnit (source.oclIsKindOf(KDM!ExceptionUnit))
+	to
+		target:JAVA!TryStatement(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,body 					<- source.codeElement -> select(e | e.oclIsTypeOf(KDM!BlockUnit))
+		,catchClauses			<- source.codeElement -> select(e | e.oclIsTypeOf(KDM!CatchUnit))
+		)
+}
+
+--Lazy rule invocado pelo 'Método Invocation' e transforma a metaclasse UsesType para a metaclasse TypeAccess
+lazy rule CreateUsesType {
+	from
+		source: KDM!UsesType 
+	to
+		target:  JAVA!TypeAccess(
+		type <- source.to								   
+		)
+}
+
+-- ===============================
+--  Rules for the primitive types=
+-- ===============================
+--creates the Boolean primitive type
+--rule PrimitiveTypeBooleanToBooleanType {
+--	from
+--		source: KDM!BooleanType 
+--	to
+--		target: JAVA!PrimitiveTypeBoolean (
+--				--name <- source.name
+--		)
+--}
+
+--creates the Byte primitive type
+--rule PrimitiveTypeByteToByteType {
+--	from
+--		source: KDM!OctetType  
+--	to
+--		target: JAVA!PrimitiveTypeByte(
+			--name <- source.name
+--		)
+--}
+
+--creates the Char primitive type
+--rule PrimitiveTypeCharToCharType {
+--	from
+--		source:KDM!CharType  
+--	to
+--		target:JAVA!PrimitiveTypeChar(
+--			--name <- source.name
+--		)
+--}
+
+--creates the Double primitive type
+--rule PrimitiveTypeDoubleToDoubleType {
+--	from
+--		source: KDM!FloatType (source.name='double') 
+--	to
+--		target: JAVA!PrimitiveTypeDouble (
+--			--name <- source.name
+--		)
+--}
+
+--creates the Float primitive type
+--rule PrimitiveTypeFloatToFloatType {
+--	from
+--		source: KDM!FloatType (source.name='float') 
+--	to
+--		target: JAVA!PrimitiveTypeFloat (
+--				--name <- source.name
+--		)
+--}
+
+--creates the long primitive type
+--rule PrimitiveTypeLongToLongType{
+--	from
+--		source: KDM!IntegerType(source.name='long') 
+--	to
+--		target: JAVA!PrimitiveTypeLong(
+				--name <- source.name
+--		)
+--}
+
+--creates the short primitive type
+--rule PrimitiveTypeIntToIntType{
+--	from
+--		source: KDM!IntegerType (source.name='int') 
+--	to
+--		target: JAVA!PrimitiveTypeInt (
+--				--name <- source.name
+--		)
+--}
+
+--creates the Void primitive type
+--rule PrimitiveTypeVoidToVoidType {
+--	from
+--		source: KDM!VoidType
+--	to
+--		target:  JAVA!PrimitiveTypeVoid(
+--				--name <- source.name
+--		)
+--}
+
+--creates the short primitive type
+--rule PrimitiveTypeShortToShortType {
+--	from
+--		source: KDM!IntegerType (source.name='short') 
+--	to
+--		target: JAVA!PrimitiveTypeShort (
+--				--name <- source.name
+--		)
+--}
+
+--Regra que transforma a metaclasses ActionElement do tipo 'Null' para a metaclasse NullLiteral
+rule TransformActionElementToNullLiteral {
+	from
+		source: KDM!ActionElement(source.kind='null')
+	to
+		target: JAVA!NullLiteral(
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		)
+}
+
+--Regra que transforma a metaclasses ActionElement do tipo 'super constructor invocation' para a metaclasse SuperConstructorInvocation
+rule TransformActionElementToSuperConstructorInvocation{
+	from
+		source: KDM!ActionElement (source.kind = 'super constructor invocation')
+	to
+		target: JAVA!SuperConstructorInvocation  (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,method    <- source.actionRelation -> select(e | e.oclIsTypeOf(KDM!Calls))
+		                                    -> collect(e | e.to)
+		,arguments  <-if (source.getReads(source).isEmpty())then 
+						  source.codeElement
+		              else 
+		               	   source.getReads(source)
+					  endif
+)}
+
+--Regra que transforma a metaclasses ActionElement do tipo 'super method invocation' para a metaclasse SuperMethodInvocation
+rule TransformActionElementToSuperMethodInvocation{
+	from
+		source: KDM!ActionElement (source.kind='super method invocation')
+	to
+		target: JAVA!SuperMethodInvocation (
+		originalCompilationUnit <- thisModule.getOriginalCompilationUnitJavaModel(source)
+		,method    <- source.actionRelation -> select(e | e.oclIsTypeOf(KDM!Calls))
+		                                    -> collect(e | e.to)
+		,arguments  <-if (source.getReads(source).isEmpty())then 
+						  source.codeElement
+		              else 
+		               	  source.getReads(source)
+					  endif
+	)}
+
+
+
+
+
