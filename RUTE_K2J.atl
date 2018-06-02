@@ -8,18 +8,12 @@
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/structure
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/conceptual
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/built
+-- Autor: Guisella Angulo Armijo
+-- email: guisella.armijo@ufscar.br; angulogc@gmail.com
+
 
 module RUTE_K2J;
 create OUT: JAVA from IN: KDM;
-
---rule InitializerToControlElement extends TransformAbstractCodeElementToBodyDeclaration {
---	from
---		src: KDM!ControlElement
---	to
---		tgt: JAVA!Initializer
-		--(
-		--body <- src.codeElement -> select(e | e.oclIsTypeOf(KDM!KDMEntity))
-		--)}
 
 --============================================================================================================================
 --HELPERS********************************************************************************************************************
@@ -33,7 +27,6 @@ self.codeElement ->collect (e | if (e.name='string')then Sequence{}
 				 ->flatten();
 
 --Helper que retorna uma sequência de elementos, inventario dos artefatos físicos do sistema.
---Helper que retorna uma sequência de elementos do inventario dos artefatos físicos do sistema.
 --KDM: InventoryModel represent the physical artifacts of the existing software system.
 helper context KDM!InventoryModel def:getCompilationUnit(): Sequence(KDM!inventoryElement) =
 self.inventoryElement.asSequence();
