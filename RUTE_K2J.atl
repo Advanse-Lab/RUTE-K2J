@@ -1,3 +1,15 @@
+ --* *******************************************************************************
+ --* Copyright (c) 2018 Advanse.
+ --* All rights reserved. This program and the accompanying materials
+ --* are made available under the terms of the Eclipse Public License v1.0
+ --* which accompanies this distribution, and is available at
+ --* http://www.eclipse.org/legal/epl-v10.html
+ --* 
+ --* Contributors:
+ --*    Guisella Angulo Armijo  - initial API and implementation
+ --*    email: guisella.armijo@ufscar.br;
+ --* *******************************************************************************
+ 
 -- @nsURI JAVA=http://www.eclipse.org/MoDisco/Java/0.2.incubation/java
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/code
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/action
@@ -8,9 +20,6 @@
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/structure
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/conceptual
 -- @nsURI KDM=http://www.eclipse.org/MoDisco/kdm/built
--- Autor: Guisella Angulo Armijo
--- email: guisella.armijo@ufscar.br; angulogc@gmail.com
-
 
 module RUTE_K2J;
 create OUT: JAVA from IN: KDM;
